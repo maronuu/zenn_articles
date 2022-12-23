@@ -1,5 +1,5 @@
 ---
-title: "簡単なデバッガを自作する"
+title: "デバッガ自作入門"
 emoji: "🐷"
 type: "tech" # tech: 技術記事 / idea: アイデア
 topics: []
