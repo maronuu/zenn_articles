@@ -6,11 +6,15 @@ topics: []
 published: false
 ---
 
-# はじめに
-この記事はEEICアドベントカレンダー2022 24日目の記事として書かれました。前日の記事は[TOOD]()でした！
+この記事は[EEIC Advent Calendar 2022](https://adventar.org/calendars/7892) 24日目の記事です。EEICとは東京大学工学部電子情報工学科・電気電子工学科を指します。
 
+# はじめに
+
+こんにちは、eeic2022のいるんごです。12/24の担当だったのですが、色々とタスクや予定が重なり投稿遅れてしまいました...。
 3年後期実験のどれかをアドカレの記事にしようかなと考えていたのですが、どれもアドカレの記事にしづらい内容でした*1。
 そこで、日々お世話になっているツールやソフトウェアを自作する車輪の再発明ネタとして、簡単なデバッガを自作するというのをやってみようと思います。
+
+[TODO]完成品のGIFとGitHub
 
 # デバッガとは
 デバッグを支援するソフトウェアを開発する上で欠かせないツールです。
@@ -18,7 +22,7 @@ published: false
 
 プログラムをデバッグする上で大事な要素は **場所**と**状態**であると言えます。
 
-具体的には、場所とはプログラムの中のどの部分を今実行しているのか？という情報です。その粒度は様々で、「関数」「スコープ」「行」「命令」などがあります。場面に応じて実行地点に関する情報を得ることが必要です。
+具体的には、場所とはプログラムの中のどの部分を今実行しているのか？という情報です。その粒度は様々で、「関数」「スコープ」「行」「命令」などがあります。場面に応じて実行地点に関する適切な情報を得ることが必要です。
 状態とは、ある部分を実行しているときの状況を再現するのに必要な情報全てと言えます。変数の中身、レジスタの中身、スタックの状況、などです。おそらくほとんどの方が、中身を見たい変数を標準(エラー)出力に出してデバッグをする"printfデバッグ"を経験したことがあるはずです。デバッガを使うプログラマは、その箇所でのバグを特定するために、プログラムの表面から何段か低いレイヤの情報(状態)を知ることができます。これにより、「あ、`index`という変数の中身を見てみたら、配列の長さを超えているじゃないか」などの判断が下せるわけです。
 まとめると、デバッガとは「あるプログラムの特定の場所での状態を得るツール」と表現できると考えられます。その仕組みを知るために、今回は`ptrace`というLinuxのシステムコールを用いた簡易的なデバッガを自作していきます。
 
@@ -127,6 +131,7 @@ gdbの使い方1., 2.,いずれの場合であっても、要するにデバッ�
 
 |Request|機能|
 |---|---|
+|`PTRACE_TRACEME`|このプロセスが親プロセスにtraceされるという関係を明示する。|
 |`PTRACE_PEEKTEXT`| traceeのメモリにおいて、特定のaddressに対応するwordを読み出す。|
 |`PTRACE_POKETEXT`| traceeのメモリにおいて、特定のaddressに対応するwordを指定された値に書き換える。|
 |`PTRACE_GETREGS` | traceeのレジスタ値のコピーを得る|
@@ -137,54 +142,302 @@ gdbの使い方1., 2.,いずれの場合であっても、要するにデバッ�
 PEEK/POKEはそれぞれtraceeのメモリに対するread/write、GETREGS/SETREGSはそれぞれレジスタに対するread/writeに対応しています。また、CONT/SINGLESTEPなどの実行の停止・再開を操作できるRequestも存在します。以上のRequestを使って`ptrace`を叩けば、デバッグしたいプロセスの実行を制御しつつ、状態を見ることができそうです。
 
 ## ELF形式
-ELF形式とは、LinuxなどのOSSで広く採用されている実行形式です。
-最も身近な例を見てみましょう。
+ELF形式とは、LinuxなどのOSで広く採用されている実行形式です。
+今回作成するデバッガはgdbなどのデバッガと同様にELF形式の実行可能ファイルを対象にすることとします。必要最低限のELFの知識を確認しておきましょう。
+
+最も身近な例として、gccでC言語のソースをコンパイルしてみましょう。
 ```bash
 # 何かしらのC言語のソースをコンパイル
 $ gcc test.c -o test_elf
 $ file test_elf
 test_elf: ELF 64-bit LSB shared object, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, BuildID[sha1]=e4c5302d1da21f7ed6d8148b4c6124172c26a92a, for GNU/Linux 3.2.0, not stripped
 ```
-fileコマンドの出力には、ELF32/64bitのいずれか、Objectのタイプ、アーキテクチャ(X86-64)などの情報が含まれていますね。
+コンパイルして得られた実行可能ファイルはELF形式です。`file`コマンドの出力には、ELF32/64bitのいずれか、Objectのタイプ、アーキテクチャ(X86-64)などの情報が含まれていますね。
 
-### ELFファイルのセグメント
-ELFファイルは、その実行バイナリの命令・データを含んでいます。
-1. コードセグメント
-2. データセグメント
-
-の2つがあります。
-コードセグメントにはCPUにより実行される命令列が含まれています(機械語)。
-データセグメントには、グローバル変数・static変数が配置されています。実体として存在しているのは初期化されているグローバル変数・static変数だけです。ローカル変数や動的に値が確定していく変数はファイルの中の実体としては存在していません。動的に決まる要素は全てコードセグメントの命令列が表現している、とも言えますね。
-
-デバッガを作る側としては、このセグメントを覗き見たいですよね。ね？
+### ELFファイルの構造
+ELFファイルはざっくりと分けてヘッダ・コード領域・データ領域に分けることが出来ます。
+コード領域は実行される命令列が機械語として格納されています。
+データ領域には、グローバル変数やStatic変数などが格納されています。
+ローカル変数やその他動的に定まる変数は実行時にメモリのスタック領域やヒープ領域に確保されるため、ファイルには含まれていません。
+デバッガを作るには、実行を停止したい関数のSymbol名をデータ領域から引き、コード領域の命令列の中から関数実行に対応する命令を特定できれば良いということが見えてきました。
 
 ### ELFファイルのヘッダ
-ELF形式には3種類のヘッダが存在しており、それぞれがMetadataを保持しています。
-[TODO]図
+これらの領域に適切にアクセスするためのMetadataは3種類のヘッダが保持しています。
 
-#### ELFヘッダ
-先頭に位置する。オブジェクトのタイプ、アーキテクチャなどのMetadataや、他の2つのヘッダにアクセスするのに必要なoffset値を含んでいます。
+- **ELFヘッダ** (`Elf64_Ehdr`)
+先頭に位置するヘッダです。オブジェクトのタイプ、アーキテクチャなどのMetadataや、他の2つのヘッダにアクセスするのに必要なoffset値を含んでいます。Cでは以下のようなメンバをもつ構造体として実装されています。
+```c
+typedef struct {
+    unsigned char   e_ident[EI_NIDENT];   /* Id bytes */
+    Elf64_Quarter   e_type;               /* file type */
+    Elf64_Quarter   e_machine;            /* machine type */
+    Elf64_Half      e_version;            /* version number */
+    Elf64_Addr      e_entry;              /* entry point */
+    Elf64_Off       e_phoff;              /* Program hdr offset */
+    Elf64_Off       e_shoff;              /* Section hdr offset */
+    Elf64_Half      e_flags;              /* Processor flags */
+    Elf64_Quarter   e_ehsize;             /* sizeof ehdr */
+    Elf64_Quarter   e_phentsize;          /* Program header entry size */
+    Elf64_Quarter   e_phnum;              /* Number of program headers */
+    Elf64_Quarter   e_shentsize;          /* Section header entry size */
+    Elf64_Quarter   e_shnum;              /* Number of section headers */
+    Elf64_Quarter   e_shstrndx;           /* String table index */
+} Elf64_Ehdr;
+```
 
-#### プログラムヘッダ
+- **プログラムヘッダ** (`Elf64_Phdr`)
+セグメントの情報が含まれているヘッダです。1つのセグメントに対して1つ存在しています。ファイル上のセグメントがどのような属性でどこに読み込まれるのかという情報を保持しています。今回はメインではないため詳細は割愛します。
 
+- **セクションヘッダ** (`Elf64_Shdr`)
+セクションヘッダは各セクションの位置、サイズ、link情報などを保持しています。1セクションに対して1つ存在していて、セクションヘッダの集合がセクションヘッダテーブルとして管理されています。ヘッダ単体の構造体としての定義は次のようになります。
+```c
+typedef struct {
+    Elf64_Half      sh_name;        /* section name */
+    Elf64_Half      sh_type;        /* section type */
+    Elf64_Xword     sh_flags;       /* section flags */
+    Elf64_Addr      sh_addr;        /* virtual address */
+    Elf64_Off       sh_offset;      /* file offset */
+    Elf64_Xword     sh_size;        /* section size */
+    Elf64_Half      sh_link;        /* link to another */
+    Elf64_Half      sh_info;        /* misc info */
+    Elf64_Xword     sh_addralign;   /* memory alignment */
+    Elf64_Xword     sh_entsize;     /* table entry size */
+} Elf64_Shdr;    
+```
 
 
 # 実装してみる
-コードは[TODO]にあります。以下では本質部分のみを切り出して、実装過程を説明していきます。
+それでは、これまで学んできた`ptrace`やELFの知識を使って実装していきましょう。
 
-引数
+以下では本質部分のみを切り出して、実装過程を説明していきます。エラーハンドリングなどは記事では省略している部分も多いです。完全なコードを見たい方はリポジトリ(TODO)をどうぞ。
 
-ELFパーサのところ
 
-lookupする
+## ElfHandlerの定義
+ELFファイルの中身やヘッダ、Traceに関する情報をまとめて扱うHandler構造体を定義します。
+```c
+#include <elf.h>
+#include <sys/user.h>
+...
 
-pid
+typedef struct ElfHandler {
+    Elf64_Ehdr *ehdr;               // ELF header
+    Elf64_Phdr *phdr;               // program header
+    Elf64_Shdr *shdr;               // section header
+    uint8_t *mem;                   // memory map of the executable
+    char *exec_cmd;                 // exec command
+    char *symbol_name;              // symbol name to be traced
+    Elf64_Addr symbol_addr;         // symbol address
+    struct user_regs_struct regs;   // registers
+} ElfHandler_t;
+```
+`user_regs_struct`という構造体は`user.h`というヘッダで定義されている構造体で、レジスタの各番号の名前と値がメンバとして定義されています。必要なメンバのみを抜き出すと以下のようになっています(X86_64)。
+```c
+struct user_regs_struct {
+    unsigned long long int r15;
+    unsigned long long int r14;
+    unsigned long long int r13;
+    unsigned long long int r12;
+    unsigned long long int rbp;
+    unsigned long long int rbx;
+    unsigned long long int r11;
+    unsigned long long int r10;
+    unsigned long long int r9;
+    unsigned long long int r8;
+    unsigned long long int rax;
+    unsigned long long int rcx;
+    unsigned long long int rdx;
+    unsigned long long int rsi;
+    unsigned long long int rdi;
+    unsigned long long int orig_rax;
+    unsigned long long int rip;
+    unsigned long long int cs;
+    unsigned long long int eflags;
+    unsigned long long int rsp;
+    unsigned long long int ss;
+    unsigned long long int fs_base;
+    unsigned long long int gs_base;
+    unsigned long long int ds;
+    unsigned long long int es;
+    unsigned long long int fs;
+    unsigned long long int gs;
+};
+```
 
-PEEK/POKEでBreakpointをおく
+## 引数のParse
+デバッガの実行は`./debugger <executable> <symbol_name>`という形式とします。例えば`test.c`というプログラムの`say_hello`というsymbol名の関数にBreakpointを置くには、gccでコンパイルした後、
+```c
+$ ./debugger ./test say_hello
+```
+と実行します。
+コマンドライン引数から受け取る情報をヘッダに詰め込みます。
+```c
+ElfHandler_t eh;
+eh.exec_cmd = strdup(argv[1]);
+eh.symbol_name = strdup(argv[2]);
+```
 
-メインループ。止まったら情報表示。
+## ELFファイルを読み込む
+```c
+#include <sys/mman.h>
+...
 
-抜ける部分。
+// read mode
+int fd = open(argv[1], O_RDONLY);
+// ファイルサイズの取得のためにstatを使用
+struct stat st;
+fstat(fd, &st);
+// fdの内容をmapする (copy-on-write)
+eh.mem = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+```
+ELFファイルの中身をメモリにmapするために次の`mmap`を用いています。
+```c
+void *mmap(void *addr, size_t length, int prot, int flags,
+           int fd, off_t offset);
+```
+`mmap`関数は`fd`の中身を`length`分だけメモリにmapします。
+`port`, `flags`にはmappingの際のメモリ保護をどのように行うか、などを指定できます。ここでは、「ページはreadable」を表す`PORT_READ`と、copy-on-writeなmappingを生成する`MAP_PRIVATE`を指定しています。
+
+## ELFファイルの検証
+読み込んだELFファイルが正当なものかどうかを検証します。
+まず`eh.mem`から各ヘッダを得ます。
+```c
+eh.ehdr = (Elf64_Ehdr *)eh.mem;
+eh.phdr = (Elf64_Phdr *)(eh.mem + eh.ehdr->e_phoff);
+eh.shdr = (Elf64_Shdr *)(eh.mem + eh.ehdr->e_shoff);
+```
+このように、ELFヘッダがもつ他2つのヘッダへのoffset情報を利用してsplitできます。
+
+次に、ELFヘッダの情報の正当性を検証します。具体的なコードは省略しますが、検証する項目は以下のとおりです:
+- ELFファイルかどうか
+- ELF executableかどうか
+- x86_64 executableかどうか
+- section headerがあるか
+
+## SymbolのAddressを得る
+symbol名からsymbolがメモリ上でどのaddrに存在するのかをlookupする関数を作りましょう。
+```c
+eh.symbol_addr = lookup_symbol_addr_by_name(&eh, eh.symbol_name);
+```
+関数は次のような実装になります。
+```c
+Elf64_Addr lookup_symbol_addr_by_name(ElfHandler_t *eh, const char *target_symname) {
+    char *str_tbl;
+    Elf64_Sym *sym_tbl;
+    Elf64_Shdr *cand_shdr;
+    uint32_t link_to_str_tbl;
+    char *cand_symname;
+
+    // iterate through the section headers
+    for (int i = 0; i < eh->ehdr->e_shnum; i++) {
+        if (eh->shdr[i].sh_type != SHT_SYMTAB)
+            continue;
+
+        cand_shdr = &eh->shdr[i];
+        // get the symbol table
+        sym_tbl = (Elf64_Sym *)&eh->mem[cand_shdr->sh_offset];
+        // get the linked string table
+        link_to_str_tbl = cand_shdr->sh_link;
+        str_tbl = (char *)&eh->mem[eh->shdr[link_to_str_tbl].sh_offset];
+
+        // iterate through the symbol table
+        for (int j = 0; j < eh->shdr[i].sh_size / sizeof(Elf64_Sym); j++, sym_tbl++) {
+            // check if the symbol name matches
+            cand_symname = &str_tbl[sym_tbl->st_name];
+            if (strcmp(cand_symname, target_symname) == 0) {
+                return (sym_tbl->st_value);
+            }
+        }
+    }
+    return 0;
+}
+```
+symbol tableは、symbol nameをkey、symbol addressをvalueとするエントリの配列です。
+この関数でやっていることは、
+1. 複数あるsection headerを総当り。symbol tableのtypeなら続ける。
+2. symbol tableをget
+3. linkされているstring tableをget
+4. symbol tableのエントリを総当り。目的のsymbol nameに一致するentryがあればその値(addr)を返す。
+
+という処理です。これでtraceに必要な情報が揃いました。
+
+
+## traceeの実行
+親プロセス(debugger)から子プロセスを生やし、実行ファイルを実行させます。その際、`ptrace`に`PTRACE_TRACEME`というrequestを指定して呼び出しておきます。これによりtraceが可能になります。
+子プロセスの生成には`fork/wait`を使えばよいです。
+```c
+// process id
+int pid = fork();
+...
+// child executes the given program
+if (pid == 0) {
+    ptrace(PTRACE_TRACEME, 0, NULL, NULL);
+    execve(eh.exec_cmd, args, envp);
+    exit(EXIT_SUCCESS);
+}
+int status;
+wait(&status);
+```
+
+## breakpointの設置
+breakpointを設置するには、`symbol_addr`に対応する命令をtrap命令に書き換えます。
+具体的には、x86_64の`INT 3`というソフトウェア割り込みを発生させる命令を使用します。この命令はSIGTRAPシグナルを発生させ、処理を中断させます。これを用いてbreakpointの機能を実現します。
+
+書き換える前の元の命令(`orig`)も必要になるので読んでおきましょう。traceeのdataの読み書きは`PTRACE_PEEKTEXT`, `PTRACE_POKETEXT`で実現できたことを思い出すと、以下のような実装になります。
+```c
+// trap命令のopcode
+#define OPCODE_INT3 0xcc
+...
+
+// get original instruction
+const long original_inst = ptrace(PTRACE_PEEKTEXT, pid, eh.symbol_addr, NULL);
+// modify to trap instruction
+const long trap_inst = (original_inst & ~0xff) | OPCODE_INT3;
+ptrace(PTRACE_POKETEXT, pid, eh.symbol_addr, trap_inst);
+```
+
+
+## メインループ
+メインループでは、以下を繰り返します:
+- (止まっていた)プロセスの実行を再開
+- `SIGTRAP`signalを検知したら
+    - レジスタの情報を取得・表示
+    - `trap`を元の命令に書き換える
+    - 命令ポインタを1つ戻す
+    - レジスタを復元
+    - 命令を1つ進める
+    - breakpointを再度復元
+
+[TODO]図
+
+実装は次のようになります。
+```c
+while (1) {
+    // resume process execution
+    ptrace(PTRACE_CONT, pid, NULL, NULL);
+    wait(&status);
+
+    if (WIFEXITED(status)) {
+        break;
+    }
+    if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGTRAP) {
+        // get registers info and display them
+        ptrace(PTRACE_GETREGS, pid, NULL, &eh.regs);
+        display_registers(&eh);
+        printf("\nPlease hit [ENTER] key to continue: ");
+        getchar();
+        // restore original instruction
+        ptrace(PTRACE_POKETEXT, pid, eh.symbol_addr, original_inst);
+        // single step to execute the original instruction
+        eh.regs.rip -= 1;
+        ptrace(PTRACE_SETREGS, pid, NULL, &eh.regs);
+        ptrace(PTRACE_SINGLESTEP, pid, NULL, NULL);
+        wait(NULL);
+        // restore trap instruction
+        ptrace(PTRACE_POKETEXT, pid, eh.symbol_addr, trap_inst);
+    }
+}
+```
+ptrace requestの`GETREGS`/`SETREGS`でレジスタのget/setをしている点、命令ポインタの値を1減らして1step前に戻している点、`SINGLESTEP`で1step進めている点がコアと言えるでしょう。
 
 
 # 結果
