@@ -19,7 +19,7 @@ published: false
 https://github.com/maronuu/SimpleDebugger
 
 完成した自作デバッガの動作は次のようなものです:
-![](./mydebugger-demo.gif)
+![](https://storage.googleapis.com/zenn-user-upload/3777ba9e8443-20221226.gif)
 
 # デバッガとは
 デバッグを支援するソフトウェアを開発する上で欠かせないツールです。
