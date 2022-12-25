@@ -11,10 +11,15 @@ published: false
 # はじめに
 
 こんにちは、eeic2022のいるんごです。12/24の担当だったのですが、色々とタスクや予定が重なり投稿遅れてしまいました...。
-3年後期実験のどれかをアドカレの記事にしようかなと考えていたのですが、どれもアドカレの記事にしづらい内容でした*1。
+3年後期実験のどれかをアドカレの記事にしようかなと考えていたのですが、どれもアドカレの記事にしづらい内容でした。
 そこで、日々お世話になっているツールやソフトウェアを自作する車輪の再発明ネタとして、簡単なデバッガを自作するというのをやってみようと思います。
 
-[TODO]完成品のGIFとGitHub
+完成品のコードは[こちら](https://github.com/maronuu/SimpleDebugger)
+
+https://github.com/maronuu/SimpleDebugger
+
+完成した自作デバッガの動作は次のようなものです:
+![](./mydebugger-demo.gif)
 
 # デバッガとは
 デバッグを支援するソフトウェアを開発する上で欠かせないツールです。
@@ -28,7 +33,7 @@ published: false
 
 ## gdb
 代表的なデバッガに[gdb](https://www.sourceware.org/gdb/)があります。使い方を軽く見てみましょう。
-gdbに関する詳しい情報は[TODO]などが参考になります。詳しく知りたい方はそちらをご覧ください。
+gdbに関する詳しい情報は[この記事](https://qiita.com/arene-calix/items/a08363db88f21c81d351)などが参考になります。詳しく知りたい方はそちらをご覧ください。
 gdbは大きく分けて2つの使い方があります。
 
 ### 1: プログラムの特定の箇所にbreakpointを設置して実行
@@ -209,7 +214,7 @@ typedef struct {
 # 実装してみる
 それでは、これまで学んできた`ptrace`やELFの知識を使って実装していきましょう。
 
-以下では本質部分のみを切り出して、実装過程を説明していきます。エラーハンドリングなどは記事では省略している部分も多いです。完全なコードを見たい方はリポジトリ(TODO)をどうぞ。
+以下では本質部分のみを切り出して、実装過程を説明していきます。エラーハンドリングなどは記事では省略している部分も多いです。完全なコードを見たい方は[リポジトリ](https://github.com/maronuu/SimpleDebugger)をどうぞ。
 
 
 ## ElfHandlerの定義
@@ -353,10 +358,10 @@ Elf64_Addr lookup_symbol_addr_by_name(ElfHandler_t *eh, const char *target_symna
 ```
 symbol tableは、symbol nameをkey、symbol addressをvalueとするエントリの配列です。
 この関数でやっていることは、
-1. 複数あるsection headerを総当り。symbol tableのtypeなら続ける。
-2. symbol tableをget
-3. linkされているstring tableをget
-4. symbol tableのエントリを総当り。目的のsymbol nameに一致するentryがあればその値(addr)を返す。
+1. 複数あるsection headerを**総当り**。symbol tableのtypeなら続ける。
+2. **symbol table**をgetする。
+3. linkされている**string table**(symbol nameのtable)をgetする。
+4. symbol tableのエントリを**総当り**。目的のsymbol nameに一致するentryがあればその値(addr)を返す。
 
 という処理です。これでtraceに必要な情報が揃いました。
 
@@ -441,10 +446,136 @@ ptrace requestの`GETREGS`/`SETREGS`でレジスタのget/setをしている点�
 
 
 # 結果
+完成した自作デバッガで簡単なプログラムをデバッグしてみましょう。
 
-test_addの例
-引数の呼び出し規約から、レジスタの値が引数に一致していることをかく
+## テストプログラム
+```c
+// test_add.c
+#include <stdio.h>
+
+int add (int a, int b, int c) {
+    return a + b + c;
+}
+
+int main(int argc, char **argv, char **envp) {
+    int a = 1;
+    int b = 2;
+    int c = 9;
+    printf("a = %d, b = %d, c = %d\n", a, b, c);
+
+    int d = add(a, b, 23); // 1(1) + 2(2) + 23(17) = 26(1a)
+    printf("%d + %d + %d = %d\n", a, b, 23, d);
+    int e = add(d, c, 54); // 26(1a) + 9(9) + 54(36) = 89(59)
+    printf("%d + %d + %d = %d\n", d, c, 54, e);
+    int f = add(e, 1, 7);  // 89(59) + 1(1) + 7(7) = 97(61)
+    printf("%d + %d + %d = %d\n", e, 1, 7, f);
+    return 0;
+}
+```
+C言語のソースファイルをELF executableにコンパイルするには、`-no-pie`というoptionを付けて
+```bash
+$ gcc -no-pie test_add.c -o test_add
+```
+のようにコンパイルします。
+
+## デバッガを使ってみよう
+
+`test_add`の関数`add`にbreakpointを貼ってみましょう。
+```bash
+$ ./debugger test_add add
+```
+`add`関数は計3回呼び出されているため、3回breakpointに引っかかって停止し、その度にレジスタ情報が表示されます。それぞれ見てみましょう。
+特に、関数`add`の引数の値と、レジスタ`rdi, rsi, rdx`の値が一致していることを確認します。ここで使われるレジスタはx86の関数呼び出し規約によります。
+
+
+- 1回目 `int d = add(a, b, 23); // 1(1) + 2(2) + 23(17) = 26(1a)`
+```bash
+$ ./debugger ./test_add add
+Tracing pid:43130 at symbol addr 401136
+a = 1, b = 2, c = 9
+
+%rax: 1
+%rbx: 401260
+%rcx: 2         
+%rdx: 17        // add関数の第3引数
+%rsi: 2         // add関数の第2引数
+%rdi: 1         // add関数の第1引数
+%rbp: 7ffd2c1049d0
+%rsp: 7ffd2c104988
+%r8: 0
+%r9: 14
+%r10: 40201a
+%r11: 246
+%r12: 401050
+%r13: 7ffd2c104ac0
+%r14: 0
+%r15: 0
+%rip: 401137
+%rflags: 206
+%cs: 33
+%ss: 2b
+%ds: 0
+%es: 0
+%fs: 0
+%gs: 0
+
+Please hit [ENTER] key to continue: 
+```
+
+- 2回目 `int e = add(d, c, 54); // 26(1a) + 9(9) + 54(36) = 89(59)`
+
+```bash
+1 + 2 + 23 = 26
+
+%rax: 1a       // 前回の計算結果?
+%rbx: 401260
+%rcx: 9        
+%rdx: 36       // add関数の第3引数
+%rsi: 9        // add関数の第2引数
+%rdi: 1a       // add関数の第1引数
+...
+%gs: 0
+
+Please hit [ENTER] key to continue: 
+```
+
+- 3回目 `int f = add(e, 1, 7);  // 89(59) + 1(1) + 7(7) = 97(61)`
+```bash
+26 + 9 + 54 = 89
+
+%rax: 59       // 前回の計算結果?
+%rbx: 401260
+%rcx: 0
+%rdx: 7        // add関数の第3引数
+%rsi: 1        // add関数の第2引数
+%rdi: 59       // add関数の第1引数
+...
+%gs: 0
+
+Please hit [ENTER] key to continue: 
+89 + 1 + 7 = 97
+Completed tracing pid: 43130
+```
+
+いずれの場合も一致していることが確認できましたね！
+以上で関数名(`symbol_name`)を指定し、breakpointを貼る機能をもつデバッガを作ることができました。
 
 # おわりに
+ごくごく小さな車輪の再発明でしたが、デバッガの仕組みが理解できて非常に楽しかったです。学科のOSの授業で扱った`fork`, `wait`, `exec`などのシステムコールも復習できました。
+on goingなプロセスにattachする機能をもつデバッガの実装は今回は時間の都合上諦めましたが、`PTRACE_ATTACH`などのrequestを適切に使えば、そこまで難しい話ではないようです。みなさんも是非デバッガを自作して仕組みの理解を深めてみて下さい！あるいは、よりアドバンスドなデバッガ自作に挑戦してみてください！
 
-*1 大規模ソフトウェアはレポートがすでに[記事](TODO)になり、マイクロプロセッサ実験はぱっとしない成果になり、人工知能演習は優勝したがためにまだ内容を世に出せない、という状態でした.
+## 余談: 車輪の再発明っていいよね
+ここからは余談です。
+「エンジニアたるもの作るものがなきゃ！」という言説をよく見かけます。ここではこのような言説に対する立場は述べませんが、私が大学に入学してからプログラミングを始めたときは「何かアプリを作りたい」「hogeというサービスを立ち上げた」というモチベーションはあまり無く、どちらかというと「コンピュータおもしろい」「コード書くの楽しい」といったモチベーションでした。
+それ以降SWEのアルバイト・インターンを経験して徐々に作りたいもの・携わりたいものが分かってきましたが、個人で応用的な何かを作る、というのは学科の実験を除いてあまりモチベーションが湧いていません。
+そんな人間である私にとっては、既に世にある基盤的なソフトウェア(の簡単なもの)を自作するという車輪の再発明はモチベーションを保ちやすく、得るものも非常に大きく感じます。
+この世には既に色々な〇〇自作があります。私と似た雰囲気のある人は是非色々な自作に取り組んでみてください！おすすめです！
+
+## Reference
+- はじめてのgdb, https://qiita.com/arene-calix/items/a08363db88f21c81d351
+- ELF Formatについて, https://www.hazymoon.jp/OpenBSD/annex/elf.html
+- 最小限のELF, https://keens.github.io/blog/2020/04/12/saishougennoelf/
+- ptraceシステムコール入門 ― プロセスの出力を覗き見してみよう！, https://itchyny.hatenablog.com/entry/2017/07/31/090000
+- Ryan "elfmaster" O'Neill, Learning Linux Binary Analysis, 2016, Packt
+- man page of MMAP, https://linuxjm.osdn.jp/html/LDP_man-pages/man2/mmap.2.html
+- x86_64で関数の引数とレジスタの対応を確認する (アセンブラ), https://qiita.com/hara0219/items/6556ef17d00922536fa8
