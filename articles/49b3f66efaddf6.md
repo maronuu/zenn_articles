@@ -6,7 +6,7 @@ topics: []
 published: false
 ---
 
-この記事は[EEIC Advent Calendar 2022](https://adventar.org/calendars/7892) 24日目の記事です。EEICとは東京大学工学部電子情報工学科・電気電子工学科を指します。
+この記事は[EEIC Advent Calendar 2022](https://adventar.org/calendars/7892) 24日目の記事です。EEICとは東京大学工学部電子情報工学科・電気電子工学科を指します。 
 
 # はじめに
 
